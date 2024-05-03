@@ -92,7 +92,7 @@ pub fn start_recording<P: AsRef<path::Path>>(device: Device, path: P) -> Stream 
 
     let mut writer = hound::WavWriter::create(path, wav_spec).unwrap();
     let stream = device.build_input_stream(&stream_config, move |data: &[i16], info| {
-        println!("Data: {}", data.len());
+        // println!("Data: {}", data.len());
         let mut writer16 = writer.get_i16_writer((data.len() / (channels as usize)) as u32);
         let mut it = data.iter();
 

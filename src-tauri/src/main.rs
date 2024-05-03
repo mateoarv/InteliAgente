@@ -3,6 +3,8 @@
 
 mod cmd_channel;
 mod recorder;
+mod openai;
+
 use std::fmt::Formatter;
 use std::sync::mpsc::Receiver;
 use std::thread;
@@ -20,6 +22,7 @@ use async_openai::{
     types::{AudioResponseFormat, CreateTranscriptionRequestArgs, TimestampGranularity},
     Client,
 };
+use tauri::async_runtime::block_on;
 
 /*
 Necesito un sistema para pasar comandos del thread del ui al thread principal. Para eso necesito:
@@ -69,7 +72,7 @@ async fn main() {
 
 struct MyVisitor;
 
-impl <'de> Visitor<'de> for MyVisitor {
+impl<'de> Visitor<'de> for MyVisitor {
     type Value = u8;
 
     fn expecting(&self, formatter: &mut Formatter) -> std::fmt::Result {
@@ -77,7 +80,7 @@ impl <'de> Visitor<'de> for MyVisitor {
     }
 
     fn visit_seq<A>(self, mut seq: A) -> Result<Self::Value, A::Error> where A: SeqAccess<'de> {
-        let el:u8  = seq.next_element()?.unwrap();
+        let el: u8 = seq.next_element()?.unwrap();
         Ok(el)
     }
 }
@@ -125,8 +128,8 @@ async fn start_recording(tx: State<'_, CmdSender<Cmd>>) -> Result<(), ()> {
 }
 
 #[tauri::command]
-async fn stop_recording(tx: State<'_, CmdSender<Cmd>>) -> Result<(), ()> {
-    if tx.send_o::<Result<(), ()>>(Cmd::StopRecording).await.is_ok() {
+async fn stop_recording(tx: State<'_, CmdSender<Cmd>>, format_text: String) -> Result<(), ()> {
+    if tx.send_io::<String, Result<(), ()>>(Cmd::StopRecording, Some(format_text)).await.is_ok() {
         println!("Recording stopped");
     }
     Ok(())
@@ -166,14 +169,14 @@ fn main_thread(app: AppHandle, mut rx: CmdReceiver<Cmd>) {
 
                     context.start_t = Some(Instant::now());
                     last_sec = 0u32;
-                    // context.stream_1 = Some(recorder::start_recording(cpal::default_host().default_input_device().unwrap(), "../test_i.wav"));
+                    context.stream_1 = Some(recorder::start_recording(cpal::default_host().default_input_device().unwrap(), "../rec.wav"));
                     // context.stream_2 = Some(recorder::start_recording(cpal::default_host().default_output_device().unwrap(), "../test_o.wav"));
-                    let (stream, rx) = recorder::start_recording2(cpal::default_host().default_output_device().unwrap(), "../test_o.wav");
-                    context.stream_1 = Some(stream);
-                    context.rx = Some(rx);
-                    context.file_1 = Some(RecFile {
-                        chunks: Vec::new(),
-                    });
+                    // let (stream, rx) = recorder::start_recording2(cpal::default_host().default_output_device().unwrap(), "../test_o.wav");
+                    // context.stream_1 = Some(stream);
+                    // context.rx = Some(rx);
+                    // context.file_1 = Some(RecFile {
+                    //     chunks: Vec::new(),
+                    // });
                     state = States::Recording;
 
 
@@ -185,6 +188,15 @@ fn main_thread(app: AppHandle, mut rx: CmdReceiver<Cmd>) {
                     context.stream_1 = None;
                     context.stream_2 = None;
                     state = States::Idle;
+                    println!("Transcribing...");
+                    let text = block_on(openai::transcribe_file("F:/Dropbox/Dropbox/Proyectos/InteliAgente/Audios/Seg1.mp3"));
+                    println!("Transcribed: {text}");
+                    app.emit_all("trans_text", text.clone()).unwrap();
+                    let format = *data.unwrap().downcast::<String>().unwrap();
+                    println!("Format:\n{format}");
+                    let result = block_on(openai::process_text(text, format));
+                    println!("Result:\n{result}");
+                    app.emit_all("result_text", result).unwrap();
                     Some(Box::new(Ok::<(), ()>(())))
                 }
             }
@@ -203,20 +215,20 @@ fn main_thread(app: AppHandle, mut rx: CmdReceiver<Cmd>) {
                     last_sec = secs;
                 }
 
-                if let Ok(chunk) = context.rx.as_ref().unwrap().try_recv() {
-                    let mut avg = 0;
-                    for s in &chunk.1 {
-                        avg += *s as i32;
-                    }
-                    avg /= chunk.1.len() as i32;
-
-                    context.file_1.as_mut().unwrap().chunks.push(Chunk {
-                        t: chunk.0,
-                        data: chunk.1,
-                    });
-
-                    //println!("{} {} {}", chunk.0.as_millis(), chunk.1.len(), avg);
-                }
+                // if let Ok(chunk) = context.rx.as_ref().unwrap().try_recv() {
+                //     let mut avg = 0;
+                //     for s in &chunk.1 {
+                //         avg += *s as i32;
+                //     }
+                //     avg /= chunk.1.len() as i32;
+                //
+                //     context.file_1.as_mut().unwrap().chunks.push(Chunk {
+                //         t: chunk.0,
+                //         data: chunk.1,
+                //     });
+                //
+                //     //println!("{} {} {}", chunk.0.as_millis(), chunk.1.len(), avg);
+                // }
             }
             _ => {}
         };
