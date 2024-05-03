@@ -16,6 +16,10 @@ use crate::recorder::Recorder;
 use std::fs::File;
 use serde::de::{SeqAccess, Visitor};
 use serde::ser::{SerializeMap, SerializeSeq};
+use async_openai::{
+    types::{AudioResponseFormat, CreateTranscriptionRequestArgs, TimestampGranularity},
+    Client,
+};
 
 /*
 Necesito un sistema para pasar comandos del thread del ui al thread principal. Para eso necesito:
@@ -44,8 +48,8 @@ pub struct RecFile {
 
 #[tokio::main]
 async fn main() {
-    test_ser();
-    return;
+    // test_ai().await;
+    // return;
     let (tx, rx) = cmd_channel::channel::<Cmd>();
 
     tauri::Builder::default()
@@ -94,10 +98,22 @@ fn test_ser() {
     let mut deser = rmp_serde::decode::Deserializer::new(f);
     //let n0 = deser.deserialize_u8(MyVisitor).unwrap();
     let n1 = deser.deserialize_seq(MyVisitor).unwrap();
-    deser.
     //deser.de
     //let n2 = deser.deserialize_seq(MyVisitor).unwrap();
     println!("{n1}");
+}
+
+async fn test_ai() {
+    let client = Client::new();
+    let request = CreateTranscriptionRequestArgs::default()
+        .file("../audio_test.wav")
+        .model("whisper-1")
+        .response_format(AudioResponseFormat::Json)
+        .build()
+        .unwrap();
+
+    let response = client.audio().transcribe(request).await.unwrap();
+    println!("{}", response.text);
 }
 
 #[tauri::command]
