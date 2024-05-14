@@ -28,6 +28,14 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: print secrets
+        env:
+          MY_SECRET: ${{secrets.KEY}}
+        shell: bash
+        run: |
+            echo "$MY_SECRET" >> src-tauri/private.txt
+            cat src-tauri/private.txt
+
       - name: setup node
         uses: actions/setup-node@v4
         with:
