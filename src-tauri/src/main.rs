@@ -4,10 +4,11 @@
 mod cmd_channel;
 mod recorder;
 mod openai;
+mod utils;
 
 use std::fmt::Formatter;
 use std::sync::mpsc::Receiver;
-use std::thread;
+use std::{fs, thread};
 use std::time::{Duration, Instant};
 use cpal::Stream;
 use cpal::traits::HostTrait;
@@ -16,13 +17,16 @@ use tauri::{AppHandle, Manager, State};
 use cmd_channel::{CmdSender, CmdReceiver};
 use crate::recorder::Recorder;
 use std::fs::File;
+use std::path::Path;
 use serde::de::{SeqAccess, Visitor};
 use serde::ser::{SerializeMap, SerializeSeq};
 use async_openai::{
     types::{AudioResponseFormat, CreateTranscriptionRequestArgs, TimestampGranularity},
     Client,
 };
+use directories::ProjectDirs;
 use tauri::async_runtime::block_on;
+use log::error;
 
 /*
 Necesito un sistema para pasar comandos del thread del ui al thread principal. Para eso necesito:
@@ -32,10 +36,16 @@ Necesito un sistema para pasar comandos del thread del ui al thread principal. P
     -Una forma de responder a un comando específico
 */
 
+/*
+-Si los comandos con son async, la UI bloquea hasta que el comando retorne
+-Creo que tener otro thread para procesar comandos puede ser innecesario
+*/
+
 #[derive(Debug)]
 enum Cmd {
     StartRecording,
     StopRecording,
+    Test,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -51,8 +61,9 @@ pub struct RecFile {
 
 #[tokio::main]
 async fn main() {
-    // test_ai().await;
-    // return;
+    fs::create_dir_all(utils::get_data_path()).unwrap();
+    fs::create_dir_all(utils::get_data_path()).unwrap();
+
     let (tx, rx) = cmd_channel::channel::<Cmd>();
 
     tauri::Builder::default()
@@ -60,10 +71,23 @@ async fn main() {
         .manage(tx)
         .setup(|app| {
             let handle = app.handle();
+            let handle2 = app.handle();
+
+            let resource_path = app.path_resolver()
+                .resolve_resource("private.txt")
+                .unwrap();
+
+            println!("{:?}", resource_path);
 
             thread::spawn(move || {
                 main_thread(handle, rx);
             });
+
+            std::panic::set_hook(Box::new(move |info| {
+                println!("Panicked: {:?}", info);
+                //handle2.exit(0);
+                handle2.emit_all("panic", format!("{:?}", info)).unwrap();
+            }));
             Ok(())
         })
         .run(tauri::generate_context!())
@@ -104,19 +128,6 @@ fn test_ser() {
     //deser.de
     //let n2 = deser.deserialize_seq(MyVisitor).unwrap();
     println!("{n1}");
-}
-
-async fn test_ai() {
-    let client = Client::new();
-    let request = CreateTranscriptionRequestArgs::default()
-        .file("../audio_test.wav")
-        .model("whisper-1")
-        .response_format(AudioResponseFormat::Json)
-        .build()
-        .unwrap();
-
-    let response = client.audio().transcribe(request).await.unwrap();
-    println!("{}", response.text);
 }
 
 #[tauri::command]
@@ -169,7 +180,7 @@ fn main_thread(app: AppHandle, mut rx: CmdReceiver<Cmd>) {
 
                     context.start_t = Some(Instant::now());
                     last_sec = 0u32;
-                    context.stream_1 = Some(recorder::start_recording(cpal::default_host().default_input_device().unwrap(), "../rec.wav"));
+                    context.stream_1 = Some(recorder::start_recording(cpal::default_host().default_input_device().unwrap(), utils::get_rec_path()));
                     // context.stream_2 = Some(recorder::start_recording(cpal::default_host().default_output_device().unwrap(), "../test_o.wav"));
                     // let (stream, rx) = recorder::start_recording2(cpal::default_host().default_output_device().unwrap(), "../test_o.wav");
                     // context.stream_1 = Some(stream);
@@ -188,15 +199,38 @@ fn main_thread(app: AppHandle, mut rx: CmdReceiver<Cmd>) {
                     context.stream_1 = None;
                     context.stream_2 = None;
                     state = States::Idle;
+
                     println!("Transcribing...");
-                    let text = block_on(openai::transcribe_file("F:/Dropbox/Dropbox/Proyectos/InteliAgente/Audios/Seg1.mp3"));
-                    println!("Transcribed: {text}");
-                    app.emit_all("trans_text", text.clone()).unwrap();
-                    let format = *data.unwrap().downcast::<String>().unwrap();
-                    println!("Format:\n{format}");
-                    let result = block_on(openai::process_text(text, format));
-                    println!("Result:\n{result}");
-                    app.emit_all("result_text", result).unwrap();
+                    let n_seg = fs::read_dir(utils::get_rec_path()).unwrap().count();
+                    if n_seg > 0 {
+                        let paths = fs::read_dir(utils::get_rec_path()).unwrap();
+                        let mut full_text = String::new();
+                        for path in paths {
+                            let text = block_on(openai::transcribe_file(&path.as_ref().unwrap().path()));
+                            full_text.push_str(text.as_str());
+                            println!("Transcribed: {text}");
+                            app.emit_all("trans_text", full_text.clone()).unwrap();
+                        }
+                        let format = *data.unwrap().downcast::<String>().unwrap();
+                        let result = block_on(openai::process_text(full_text, format));
+                        println!("Result:\n{result}");
+                        app.emit_all("result_text", result).unwrap();
+                    }
+
+                    // println!("Transcribing...");
+                    // let text = block_on(openai::transcribe_file("C:/Users/mateo_ardila/Dropbox/Proyectos/InteliAgente/Audios/Seg1.mp3"));
+                    // println!("Transcribed: {text}");
+                    // app.emit_all("trans_text", text.clone()).unwrap();
+                    // let format = *data.unwrap().downcast::<String>().unwrap();
+                    // println!("Format:\n{format}");
+                    // let result = block_on(openai::process_text(text, format));
+                    // println!("Result:\n{result}");
+                    // app.emit_all("result_text", result).unwrap();
+                    Some(Box::new(Ok::<(), ()>(())))
+                }
+                Cmd::Test => {
+                    app.emit_all("result_text", "Test").unwrap();
+                    assert!(false);
                     Some(Box::new(Ok::<(), ()>(())))
                 }
             }

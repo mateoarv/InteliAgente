@@ -1,11 +1,11 @@
 <script lang="ts">
-	import { Button, Spinner, Card, Textarea } from 'flowbite-svelte';
+	import { Button, Spinner, Card, Textarea, Modal } from 'flowbite-svelte';
 	import { invoke } from '@tauri-apps/api/tauri';
-	import { MicrophoneSolid, PauseSolid } from 'flowbite-svelte-icons';
+	import { MicrophoneSolid, PauseSolid,ExclamationCircleOutline  } from 'flowbite-svelte-icons';
 	import { emit, listen } from '@tauri-apps/api/event';
 	import { onMount } from 'svelte';
 
-	document.addEventListener('contextmenu', event => event.preventDefault());
+	//document.addEventListener('contextmenu', event => event.preventDefault());
 
 	let rec_time_text = '00:00:00';
 	let rec_state = 0;
@@ -19,7 +19,10 @@
 - Análisis y plan contemplando medicamentos Y conducta a seguir`;
 	let result_text = "";
 
+	let error_modal = false;
+	let error_text = "";
 	onMount(async () => {
+		
 		const unlisten_1 = await listen('rec_time', (event) => {
 			//console.log(event.payload);
 			rec_time_text = event.payload;
@@ -32,6 +35,11 @@
 			//console.log(event.payload);
 			result_text = event.payload;
 		});
+		const unlisten_4 = await listen('panic', (event) => {
+			error_text += event.payload + "\n\n";
+			error_modal = true;
+			console.log(event.payload);
+		});
 	});
 
 	async function record_btn() {
@@ -39,6 +47,8 @@
 			console.log("Rec");
 			rec_time_text = '00:00:00';
 			await invoke('start_recording');
+			trans_text = "";
+			result_text = "";
 			rec_state = 1;
 		} else if(rec_state == 1) {
 			console.log("Stop");
@@ -89,3 +99,11 @@
 		</Button>
 	</div>
 </div>
+
+<Modal title="Ha ocurrido un error" bind:open={error_modal} size="xs" autoclose>
+	<div class="text-center">
+	  <ExclamationCircleOutline class="mx-auto mb-4 text-gray-400 w-12 h-12 dark:text-gray-200" />
+	  <p class="text-base leading-relaxed dark:text-white">{error_text}</p>
+	  <Button color="red" class="me-2">Cerrar</Button>
+	</div>
+</Modal> 

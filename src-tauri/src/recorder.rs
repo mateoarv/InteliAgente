@@ -1,6 +1,7 @@
 use std::fs::File;
 use std::io::BufWriter;
-use std::{path, thread};
+use std::{fs, path, thread};
+use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 use cpal::{BufferSize, Device, FrameCount, SampleFormat, SampleRate, Stream, StreamConfig};
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
@@ -10,13 +11,13 @@ use std::sync::mpsc::{Sender, Receiver};
 use std::sync::mpsc;
 
 const BASE_RATE: u32 = 48000;
+const SEG_DUR: u32 = 30;
 
 pub struct Recorder {
     device: Device,
     stream_config: StreamConfig,
     wav_spec: WavSpec,
 }
-
 
 
 impl Recorder {
@@ -64,7 +65,7 @@ impl Recorder {
     }
 }
 
-pub fn start_recording<P: AsRef<path::Path>>(device: Device, path: P) -> Stream {
+pub fn start_recording<P: AsRef<path::Path>>(device: Device, dir_path: P) -> Stream {
     let configs = device.supported_input_configs().unwrap().chain(device.supported_output_configs().unwrap());
 
     let mut channels = 0;
@@ -90,9 +91,31 @@ pub fn start_recording<P: AsRef<path::Path>>(device: Device, path: P) -> Stream 
         sample_format: hound::SampleFormat::Int,
     };
 
-    let mut writer = hound::WavWriter::create(path, wav_spec).unwrap();
+
+    if dir_path.as_ref().try_exists().unwrap() {
+        fs::remove_dir_all(dir_path.as_ref()).unwrap();
+    }
+    fs::create_dir_all(dir_path.as_ref()).unwrap();
+
+
+    let base_path_buf = PathBuf::from(dir_path.as_ref());
+    let mut path_buf = base_path_buf.clone();
+    path_buf.push("seg0.wav");
+    let mut writer = hound::WavWriter::create(path_buf.as_path(), wav_spec).unwrap();
+    let mut sample_count = 0u32;
+    let mut seg_count = 0u32;
     let stream = device.build_input_stream(&stream_config, move |data: &[i16], info| {
         // println!("Data: {}", data.len());
+
+        //Crear nuevo segmento
+        if sample_count >= BASE_RATE * SEG_DUR {
+            seg_count += 1;
+            let mut path_buf = base_path_buf.clone();
+            path_buf.push(format!("seg{}.wav", seg_count));
+            writer = hound::WavWriter::create(path_buf.as_path(), wav_spec).unwrap();
+            sample_count = 0;
+        }
+
         let mut writer16 = writer.get_i16_writer((data.len() / (channels as usize)) as u32);
         let mut it = data.iter();
 
@@ -103,6 +126,7 @@ pub fn start_recording<P: AsRef<path::Path>>(device: Device, path: P) -> Stream 
                 let mono = (*s + *it.next().unwrap()) / 2;
                 writer16.write_sample(mono);
             }
+            sample_count += 1;
         }
 
         writer16.flush().unwrap();

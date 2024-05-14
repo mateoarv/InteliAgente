@@ -1,3 +1,5 @@
+use std::fs::File;
+use std::io::Read;
 use std::path;
 use async_openai::{
     types::{AudioResponseFormat, CreateTranscriptionRequestArgs, TimestampGranularity},
@@ -13,7 +15,8 @@ está hablando (médico o paciente) y por lo tanto es algo que debes intuir. Al 
 importante desde un punto de vista clínico en el mismo formato del ejemplo que se te ha proporcionado.";
 
 pub async fn transcribe_file<P: AsRef<path::Path>>(path: P) -> String {
-    let client = Client::new();
+    let client = Client::with_config(OpenAIConfig::new().with_api_key(get_key()));
+    // let client = Client::new();
     let request = CreateTranscriptionRequestArgs::default()
         .file(path)
         .model("whisper-1")
@@ -27,7 +30,8 @@ pub async fn transcribe_file<P: AsRef<path::Path>>(path: P) -> String {
 }
 
 pub async fn process_text(text: String, format: String) -> String {
-    let client = Client::new();
+    let client = Client::with_config(OpenAIConfig::new().with_api_key(get_key()));
+    // let client = Client::new();
     let request = CreateChatCompletionRequestArgs::default()
         //.max_tokens(512u16)
         .model("gpt-3.5-turbo")
@@ -52,4 +56,11 @@ pub async fn process_text(text: String, format: String) -> String {
 
     let mut response = client.chat().create(request).await.unwrap();
     response.choices.remove(0).message.content.unwrap()
+}
+
+fn get_key() -> String {
+    let mut file = File::open("private.txt").unwrap();
+    let mut key = String::new();
+    file.read_to_string(&mut key).unwrap();
+    return key;
 }
