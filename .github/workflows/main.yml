@@ -25,6 +25,14 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Set env variables
+        env:
+            UPDATE_KEY: ${{secrets.UPDATE_KEY}}
+            UPDATE_PASS: ${{secrets.UPDATE_PASS}}
+        run: |
+          echo "TAURI_PRIVATE_KEY=$UPDATE_KEY" >> "$GITHUB_ENV"
+          echo "TAURI_KEY_PASSWORD=$UPDATE_PASS" >> "$GITHUB_ENV"
+          
       - name: print secrets
         env:
           MY_SECRET: ${{secrets.KEY}}
