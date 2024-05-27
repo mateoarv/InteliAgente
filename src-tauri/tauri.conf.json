@@ -8,7 +8,7 @@
 	},
 	"package": {
 		"productName": "InteliAgente",
-		"version": "0.1.2"
+		"version": "0.1.1"
 	},
 	"tauri": {
 		"allowlist": {
@@ -61,7 +61,7 @@
 				"fullscreen": false,
 				"height": 768,
 				"resizable": true,
-				"title": "InteliAgente 0.1.2",
+				"title": "InteliAgente 0.1.1",
 				"width": 1024
 			}
 		]
