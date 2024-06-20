@@ -1,92 +1,82 @@
-use std::fs::File;
-use std::io::BufWriter;
-use std::{fs, path, thread};
-use std::path::{Path, PathBuf};
-use std::time::{Duration, Instant};
-use cpal::{BufferSize, Device, FrameCount, SampleFormat, SampleRate, Stream, StreamConfig};
-use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
+use std::{fs, path};
+use std::path::PathBuf;
+
+use cpal::{BufferSize, Device, SampleFormat, SampleRate, SizedSample, Stream, StreamConfig, SupportedStreamConfigRange};
+use cpal::traits::{DeviceTrait, StreamTrait};
+use dasp_sample;
+use dasp_sample::{ToSample};
 use hound;
-use hound::{WavSpec, WavWriter};
-use std::sync::mpsc::{Sender, Receiver};
-use std::sync::mpsc;
+use hound::WavSpec;
 
-const BASE_RATE: u32 = 48000;
+const IDEAL_RATE: u32 = 48000;
 const SEG_DUR: u32 = 30;
-
-pub struct Recorder {
-    device: Device,
-    stream_config: StreamConfig,
-    wav_spec: WavSpec,
-}
-
-
-impl Recorder {
-    pub fn new(device: Device) -> Self {
-        println!("{}", device.name().unwrap());
-        let stream_config = StreamConfig {
-            channels: 2,
-            sample_rate: SampleRate(48000),
-            buffer_size: BufferSize::Default,
-        };
-
-        let wav_spec = WavSpec {
-            channels: 1,
-            sample_rate: 48000,
-            bits_per_sample: 16,
-            sample_format: hound::SampleFormat::Int,
-        };
-
-        Self {
-            device,
-            stream_config,
-            wav_spec,
-        }
-    }
-
-    pub fn start<P: AsRef<path::Path>>(&self, path: P) -> Recording {
-        let mut writer = hound::WavWriter::create(path, self.wav_spec).unwrap();
-        let stream = self.device.build_input_stream(&self.stream_config, move |data: &[i16], info| {
-            println!("Data: {}", data.len());
-            let mut writer16 = writer.get_i16_writer((data.len() / 2) as u32);
-            let mut it = data.iter();
-
-            while let Some(s) = it.next() {
-                let mono = (*s + *it.next().unwrap()) / 2;
-                //writer16.write_sample(*s);
-                writer16.write_sample(mono);
-            }
-
-            writer16.flush().unwrap();
-        }, |err| {}, None).unwrap();
-        stream.play().unwrap();
-        Recording {
-            stream,
-        }
-    }
-}
+const PREFERRED_FORMATS: [SampleFormat; 10] = [
+    SampleFormat::I16,
+    SampleFormat::U16,
+    SampleFormat::I32,
+    SampleFormat::U32,
+    SampleFormat::F32,
+    SampleFormat::I64,
+    SampleFormat::U64,
+    SampleFormat::F64,
+    SampleFormat::I8,
+    SampleFormat::U8,
+];
 
 pub fn start_recording<P: AsRef<path::Path>>(device: Device, dir_path: P) -> Stream {
-    let configs = device.supported_input_configs().unwrap().chain(device.supported_output_configs().unwrap());
+    let configs = device
+        .supported_input_configs().unwrap()
+        .chain(device.supported_output_configs().unwrap())
+        .collect::<Vec<SupportedStreamConfigRange>>();
 
+    let mut rate = 0;
     let mut channels = 0;
-    for c in configs {
-        if c.sample_format() == SampleFormat::I16 {
-            assert!(c.min_sample_rate().0 <= BASE_RATE && c.max_sample_rate().0 >= BASE_RATE);
+    let mut format = SampleFormat::I16;
+    let mut found = false;
+
+    for _format in PREFERRED_FORMATS {
+        if let Some(c) = configs.iter().find(|x| { x.sample_format() == _format }) {
+            format = _format;
+            if c.max_sample_rate().0 <= IDEAL_RATE {
+                rate = c.max_sample_rate().0;
+            } else if c.min_sample_rate().0 >= IDEAL_RATE {
+                rate = c.min_sample_rate().0;
+            } else {
+                rate = IDEAL_RATE;
+            }
             channels = c.channels();
+            found = true;
             break;
         }
     }
-    assert!(channels == 1 || channels == 2);
+
+    if !found {
+        let mut dbg_msg = String::new();
+        for c in configs.iter() {
+            dbg_msg.push_str(format!("Format: {}, Channels: {}, Min rate: {}, Max rate: {}",
+                                     c.sample_format(), c.channels(), c.min_sample_rate().0,
+                                     c.max_sample_rate().0).as_str());
+            dbg_msg.push('\n');
+        }
+        panic!("Incompatible format: \n{}", dbg_msg);
+    }
+
+    println!("Device: {}, Channels: {}, Rate: {}, Fmt: {}",
+             device.name().unwrap(),
+             channels,
+             rate,
+             format
+    );
 
     let stream_config = StreamConfig {
         channels,
-        sample_rate: SampleRate(BASE_RATE),
+        sample_rate: SampleRate(rate),
         buffer_size: BufferSize::Default,
     };
 
     let wav_spec = WavSpec {
         channels: 1,
-        sample_rate: BASE_RATE,
+        sample_rate: rate,
         bits_per_sample: 16,
         sample_format: hound::SampleFormat::Int,
     };
@@ -97,18 +87,17 @@ pub fn start_recording<P: AsRef<path::Path>>(device: Device, dir_path: P) -> Str
     }
     fs::create_dir_all(dir_path.as_ref()).unwrap();
 
-
     let base_path_buf = PathBuf::from(dir_path.as_ref());
     let mut path_buf = base_path_buf.clone();
     path_buf.push("seg0.wav");
     let mut writer = hound::WavWriter::create(path_buf.as_path(), wav_spec).unwrap();
     let mut sample_count = 0u32;
     let mut seg_count = 0u32;
-    let stream = device.build_input_stream(&stream_config, move |data: &[i16], info| {
-        // println!("Data: {}", data.len());
+    let f = move |data: &[i16]| {
+        //println!("Data: {}", data.len());
 
         //Crear nuevo segmento
-        if sample_count >= BASE_RATE * SEG_DUR {
+        if sample_count >= rate * SEG_DUR {
             seg_count += 1;
             let mut path_buf = base_path_buf.clone();
             path_buf.push(format!("seg{}.wav", seg_count));
@@ -120,60 +109,42 @@ pub fn start_recording<P: AsRef<path::Path>>(device: Device, dir_path: P) -> Str
         let mut it = data.iter();
 
         while let Some(s) = it.next() {
-            if channels == 1 {
-                writer16.write_sample(*s);
-            } else {
-                let mono = (*s + *it.next().unwrap()) / 2;
-                writer16.write_sample(mono);
+            let mut mono = *s;
+            for _ in 0..(channels - 1) {
+                mono += *it.next().unwrap();
             }
+            mono = mono / (channels as i16);
+            writer16.write_sample(mono);
             sample_count += 1;
         }
 
         writer16.flush().unwrap();
-    }, |err| {}, None).unwrap();
+    };
+
+    let stream = match format {
+        SampleFormat::I8 => get_stream::<i8, _>(device, stream_config, f),
+        SampleFormat::I16 => get_stream::<i16, _>(device, stream_config, f),
+        SampleFormat::I32 => get_stream::<i32, _>(device, stream_config, f),
+        SampleFormat::I64 => get_stream::<i64, _>(device, stream_config, f),
+        SampleFormat::U8 => get_stream::<u8, _>(device, stream_config, f),
+        SampleFormat::U16 => get_stream::<u16, _>(device, stream_config, f),
+        SampleFormat::U32 => get_stream::<u32, _>(device, stream_config, f),
+        SampleFormat::U64 => get_stream::<u64, _>(device, stream_config, f),
+        SampleFormat::F32 => get_stream::<f32, _>(device, stream_config, f),
+        SampleFormat::F64 => get_stream::<f64, _>(device, stream_config, f),
+        _ => get_stream::<i16, _>(device, stream_config, f), //TODO: err
+    };
+
     stream.play().unwrap();
     stream
 }
 
-pub fn start_recording2<P: AsRef<path::Path>>(device: Device, path: P) -> (Stream, Receiver<(Duration, Vec<i16>)>) {
-    let configs = device.supported_input_configs().unwrap().chain(device.supported_output_configs().unwrap());
-
-    let mut channels = 0;
-    for c in configs {
-        if c.sample_format() == SampleFormat::I16 {
-            assert!(c.min_sample_rate().0 <= BASE_RATE && c.max_sample_rate().0 >= BASE_RATE);
-            channels = c.channels();
-            break;
-        }
-    }
-    assert!(channels == 1 || channels == 2);
-
-    let stream_config = StreamConfig {
-        channels,
-        sample_rate: SampleRate(BASE_RATE),
-        buffer_size: BufferSize::Default,
-    };
-
-
-    let (tx, rx): (Sender<(Duration, Vec<i16>)>, Receiver<(Duration, Vec<i16>)>) = mpsc::channel();
-
-    let mut t0 = Instant::now();
-
-    let stream = device.build_input_stream(&stream_config, move |data: &[i16], info| {
-        let mut sample_vec: Vec<i16> = Vec::new();
-        sample_vec.extend_from_slice(data);
-        tx.send((t0.elapsed(), sample_vec)).unwrap();
-        t0 = Instant::now();
-    }, |err| {}, None).unwrap();
-    stream.play().unwrap();
-    (stream, rx)
-}
-
-pub struct Recording {
-    stream: Stream,
-    //writer: WavWriter<BufWriter<File>>,
-}
-
-impl Recording {
-    pub fn stop(self) {}
+fn get_stream<T, F>(device: Device, stream_config: StreamConfig, mut callback: F) -> Stream
+    where
+        T: SizedSample + ToSample<i16>,
+        F: FnMut(&[i16]) + Send + 'static
+{
+    device.build_input_stream(&stream_config, move |data: &[T], _info| {
+        callback(data.iter().map(|x| { x.to_sample::<i16>() }).collect::<Vec<i16>>().as_slice());
+    }, |_| {}, None).unwrap()
 }

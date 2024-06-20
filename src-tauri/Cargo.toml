@@ -25,6 +25,7 @@ rmp-serde = "1.2.0"
 async-openai = "0.21.0"
 log = "0.4.21"
 directories = "5.0.1"
+dasp_sample = "0.11.0"
 
 [features]
 # this feature is used for production builds or when `devPath` points to the filesystem and the built-in dev server is disabled.

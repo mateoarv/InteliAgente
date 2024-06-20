@@ -2,7 +2,7 @@ use std::fs::File;
 use std::io::Read;
 use std::path;
 use async_openai::{
-    types::{AudioResponseFormat, CreateTranscriptionRequestArgs, TimestampGranularity},
+    types::{AudioResponseFormat, CreateTranscriptionRequestArgs},
     Client,
 };
 use async_openai::config::OpenAIConfig;

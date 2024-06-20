@@ -1,5 +1,5 @@
 <script lang="ts">
-	import { Button, Spinner, Card, Textarea, Modal } from 'flowbite-svelte';
+	import { Button, Spinner, Card, Textarea, Modal, Label, Select } from 'flowbite-svelte';
 	import { invoke } from '@tauri-apps/api/tauri';
 	import { MicrophoneSolid, PauseSolid,ExclamationCircleOutline  } from 'flowbite-svelte-icons';
 	import { emit, listen } from '@tauri-apps/api/event';
@@ -18,11 +18,16 @@
 - Diagnóstico (Codifica cada cosa con el código de clasificación CIE10 y Define si es principal o secundario y si es nuevo o repetido)
 - Análisis y plan contemplando medicamentos Y conducta a seguir`;
 	let result_text = "";
+	let devices = [];
+	let selected_device = undefined;
 
 	let error_modal = false;
 	let error_text = "";
+	let dbg_modal = false;
+	let dbg_text = "";
 	onMount(async () => {
-		
+	
+		update_devices();
 		const unlisten_1 = await listen('rec_time', (event) => {
 			//console.log(event.payload);
 			rec_time_text = event.payload;
@@ -40,13 +45,31 @@
 			error_modal = true;
 			console.log(event.payload);
 		});
+		const unlisten_5 = await listen('dbg_msg', (event) => {
+			dbg_text += event.payload;
+			dbg_text += "----\n";
+			dbg_modal = true;
+			console.log(event.payload);
+		});
+
+		emit('front_ready');
 	});
+
+	async function update_devices() {
+		let _devices = await invoke('get_devices');
+		console.log(_devices);
+		devices = [];
+		for(const dev of _devices) {
+			devices.push({ value: dev, name: dev });
+		}
+		selected_device = devices[0].value;
+	}
 
 	async function record_btn() {
 		if(rec_state == 0) {
 			console.log("Rec");
 			rec_time_text = '00:00:00';
-			await invoke('start_recording');
+			await invoke('start_recording',{device: selected_device});
 			trans_text = "";
 			result_text = "";
 			rec_state = 1;
@@ -56,12 +79,22 @@
 			await invoke('stop_recording',{formatText: format_text});
 			rec_state = 0;
 		}
-
 	}
+
+
+
 
 </script>
 
 <div class="flex flex-col h-screen">
+	<div class="flex justify-center gap-x-2 p-2 min-h-0">
+		<Card class="max-w-full min-h-0">
+			<Label>
+				Micrófono:
+				<Select class="mt-2" items={devices} placeholder="Seleccione una opción:" bind:value={selected_device}/>
+			  </Label>
+		</Card>
+	</div>
 	<div class="flex grow justify-center gap-x-2 p-2 min-h-0">
 		<Card class="max-w-full min-h-0">
 			<h1 class="mb-2 text-center text-2xl font-bold text-gray-900 dark:text-white">
@@ -78,7 +111,7 @@
 			<h1 class="mb-2 text-center text-2xl font-bold text-gray-900 dark:text-white">
 				Formato
 			</h1>
-			<Textarea class="resize-none h-full" value={format_text} spellcheck="false"></Textarea>
+			<Textarea class="resize-none h-full" bind:value={format_text} spellcheck="false"></Textarea>
 			<h1 class="mb-2 text-center text-2xl font-bold text-gray-900 dark:text-white">
 				Interpretación
 			</h1>
@@ -100,10 +133,17 @@
 	</div>
 </div>
 
-<Modal title="Ha ocurrido un error" bind:open={error_modal} size="xs" autoclose>
+<Modal title="Ha ocurrido un error" bind:open={error_modal} size="lg" autoclose>
 	<div class="text-center">
 	  <ExclamationCircleOutline class="mx-auto mb-4 text-gray-400 w-12 h-12 dark:text-gray-200" />
-	  <p class="text-base leading-relaxed dark:text-white">{error_text}</p>
+	  <p class="text-base leading-relaxed dark:text-white whitespace-pre-wrap">{error_text}</p>
+	  <Button color="red" class="me-2">Cerrar</Button>
+	</div>
+</Modal> 
+
+<Modal title="Mensaje debug" bind:open={dbg_modal} size="lg" autoclose>
+	<div class="text-center">
+	  <p class="text-base leading-relaxed dark:text-white whitespace-pre-wrap">{dbg_text}</p>
 	  <Button color="red" class="me-2">Cerrar</Button>
 	</div>
 </Modal> 

@@ -1,32 +1,24 @@
 // Prevents additional console window on Windows in release, DO NOT REMOVE!!
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+use std::{fs, thread};
+use std::fmt::Formatter;
+use std::sync::mpsc::Receiver;
+use std::time::{Duration, Instant};
+
+use cpal::Stream;
+use cpal::traits::{DeviceTrait, HostTrait};
+use serde::{Deserialize, Serialize};
+use serde::de::{SeqAccess, Visitor};
+use tauri::{AppHandle, Manager, State};
+use tauri::async_runtime::block_on;
+
+use cmd_channel::{CmdReceiver, CmdSender};
+
 mod cmd_channel;
 mod recorder;
 mod openai;
 mod utils;
-
-use std::fmt::Formatter;
-use std::sync::mpsc::Receiver;
-use std::{fs, thread};
-use std::time::{Duration, Instant};
-use cpal::Stream;
-use cpal::traits::HostTrait;
-use serde::{Deserialize, Deserializer, Serialize, Serializer};
-use tauri::{AppHandle, Manager, State};
-use cmd_channel::{CmdSender, CmdReceiver};
-use crate::recorder::Recorder;
-use std::fs::File;
-use std::path::Path;
-use serde::de::{SeqAccess, Visitor};
-use serde::ser::{SerializeMap, SerializeSeq};
-use async_openai::{
-    types::{AudioResponseFormat, CreateTranscriptionRequestArgs, TimestampGranularity},
-    Client,
-};
-use directories::ProjectDirs;
-use tauri::async_runtime::block_on;
-use log::error;
 
 /*
 Necesito un sistema para pasar comandos del thread del ui al thread principal. Para eso necesito:
@@ -67,11 +59,9 @@ async fn main() {
     let (tx, rx) = cmd_channel::channel::<Cmd>();
 
     tauri::Builder::default()
-        .invoke_handler(tauri::generate_handler![start_recording, stop_recording])
+        .invoke_handler(tauri::generate_handler![start_recording, stop_recording, get_devices])
         .manage(tx)
         .setup(|app| {
-            let handle = app.handle();
-            let handle2 = app.handle();
 
             let resource_path = app.path_resolver()
                 .resolve_resource("private.txt")
@@ -79,15 +69,39 @@ async fn main() {
 
             println!("{:?}", resource_path);
 
+            let handle = app.handle();
             thread::spawn(move || {
                 main_thread(handle, rx);
             });
 
+            let handle = app.handle();
             std::panic::set_hook(Box::new(move |info| {
                 println!("Panicked: {:?}", info);
                 //handle2.exit(0);
-                handle2.emit_all("panic", format!("{:?}", info)).unwrap();
+                handle.emit_all("panic", format!("{:?}", info)).unwrap();
             }));
+
+            let _handle = app.handle();
+            let _id = app.listen_global("front_ready",move |_ev| {
+                println!("Front ready");
+
+                // let mut msg = String::new();
+                //
+                // for host in cpal::available_hosts() {
+                //     msg.push_str(format!("Host: {}\n", host.name()).as_str());
+                //     let host = cpal::host_from_id(host).unwrap();
+                //     for device in host.input_devices().unwrap() {
+                //         msg.push_str(format!("-{}\n", device.name().unwrap()).as_str());
+                //         for c in device.supported_input_configs().unwrap() {
+                //             msg.push_str(format!("  -{}b, {}ch, [{},{}]\n",
+                //                                  c.sample_format(), c.channels(), c.min_sample_rate().0,
+                //                                  c.max_sample_rate().0).as_str());
+                //         }
+                //     }
+                // }
+                // println!("{msg}");
+                // handle.app_handle().emit_all("dbg_msg", msg).unwrap();
+            });
             Ok(())
         })
         .run(tauri::generate_context!())
@@ -109,30 +123,23 @@ impl<'de> Visitor<'de> for MyVisitor {
     }
 }
 
-fn test_ser() {
-    {
-        let f = File::create("test.bin").unwrap();
-
-        let mut ser = rmp_serde::encode::Serializer::new(f);
-        let mut seq = ser.serialize_seq(None).unwrap();
-        let n1 = 5u8;
-        seq.serialize_element(&n1).unwrap();
-        //seq.serialize_element(&n1).unwrap();
-        SerializeSeq::end(seq).unwrap();
+#[tauri::command]
+async fn get_devices() -> Result<Vec<String>, ()> {
+    let def_device = cpal::default_host().default_input_device().unwrap().name().unwrap();
+    let mut names = vec![def_device.clone()];
+    for device in cpal::default_host().input_devices().unwrap() {
+        let name = device.name().unwrap();
+        println!("{}", name);
+        if name != def_device {
+            names.push(name);
+        }
     }
-
-    let f = File::open("test.bin").unwrap();
-    let mut deser = rmp_serde::decode::Deserializer::new(f);
-    //let n0 = deser.deserialize_u8(MyVisitor).unwrap();
-    let n1 = deser.deserialize_seq(MyVisitor).unwrap();
-    //deser.de
-    //let n2 = deser.deserialize_seq(MyVisitor).unwrap();
-    println!("{n1}");
+    Ok(names)
 }
 
 #[tauri::command]
-async fn start_recording(tx: State<'_, CmdSender<Cmd>>) -> Result<(), ()> {
-    if tx.send_o::<Result<(), ()>>(Cmd::StartRecording).await.is_ok() {
+async fn start_recording(tx: State<'_, CmdSender<Cmd>>, device: String) -> Result<(), ()> {
+    if tx.send_io::<String, Result<(), ()>>(Cmd::StartRecording, Some(device)).await.is_ok() {
         println!("Recording started");
     }
     Ok(())
@@ -178,18 +185,21 @@ fn main_thread(app: AppHandle, mut rx: CmdReceiver<Cmd>) {
                 Cmd::StartRecording => {
                     println!("Recording");
 
-                    context.start_t = Some(Instant::now());
-                    last_sec = 0u32;
-                    context.stream_1 = Some(recorder::start_recording(cpal::default_host().default_input_device().unwrap(), utils::get_rec_path()));
-                    // context.stream_2 = Some(recorder::start_recording(cpal::default_host().default_output_device().unwrap(), "../test_o.wav"));
-                    // let (stream, rx) = recorder::start_recording2(cpal::default_host().default_output_device().unwrap(), "../test_o.wav");
-                    // context.stream_1 = Some(stream);
-                    // context.rx = Some(rx);
-                    // context.file_1 = Some(RecFile {
-                    //     chunks: Vec::new(),
-                    // });
-                    state = States::Recording;
-
+                    //Encontrar device seleccionado
+                    let selected_device = *data.unwrap().downcast::<String>().unwrap();
+                    let mut found = false;
+                    for device in cpal::default_host().input_devices().unwrap() {
+                        let name = device.name().unwrap();
+                        if name == selected_device {
+                            context.start_t = Some(Instant::now());
+                            last_sec = 0u32;
+                            context.stream_1 = Some(recorder::start_recording(device, utils::get_rec_path()));
+                            state = States::Recording;
+                            found = true;
+                            break;
+                        }
+                    }
+                    assert!(found);
 
                     Some(Box::new(Ok::<(), ()>(())))
                 }
@@ -212,20 +222,12 @@ fn main_thread(app: AppHandle, mut rx: CmdReceiver<Cmd>) {
                             app.emit_all("trans_text", full_text.clone()).unwrap();
                         }
                         let format = *data.unwrap().downcast::<String>().unwrap();
+                        println!("Format:\n{format}");
                         let result = block_on(openai::process_text(full_text, format));
                         println!("Result:\n{result}");
                         app.emit_all("result_text", result).unwrap();
                     }
 
-                    // println!("Transcribing...");
-                    // let text = block_on(openai::transcribe_file("C:/Users/mateo_ardila/Dropbox/Proyectos/InteliAgente/Audios/Seg1.mp3"));
-                    // println!("Transcribed: {text}");
-                    // app.emit_all("trans_text", text.clone()).unwrap();
-                    // let format = *data.unwrap().downcast::<String>().unwrap();
-                    // println!("Format:\n{format}");
-                    // let result = block_on(openai::process_text(text, format));
-                    // println!("Result:\n{result}");
-                    // app.emit_all("result_text", result).unwrap();
                     Some(Box::new(Ok::<(), ()>(())))
                 }
                 Cmd::Test => {
