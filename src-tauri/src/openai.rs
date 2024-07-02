@@ -59,7 +59,7 @@ pub async fn process_text(text: String, format: String) -> String {
 }
 
 fn get_key() -> String {
-    let mut file = File::open("private.txt").unwrap();
+    let mut file = File::open("conf_1.conf").unwrap();
     let mut key = String::new();
     file.read_to_string(&mut key).unwrap();
     key = key.trim().to_string();

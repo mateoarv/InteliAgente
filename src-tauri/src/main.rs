@@ -2,23 +2,29 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 use std::{fs, thread};
-use std::fmt::Formatter;
+use std::fs::File;
+use std::ops::Deref;
 use std::sync::mpsc::Receiver;
 use std::time::{Duration, Instant};
 
 use cpal::Stream;
 use cpal::traits::{DeviceTrait, HostTrait};
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize};
 use serde::de::{SeqAccess, Visitor};
 use tauri::{AppHandle, Manager, State};
 use tauri::async_runtime::block_on;
+use tokio::sync::Mutex;
 
 use cmd_channel::{CmdReceiver, CmdSender};
+
+use crate::cloud::CloudManager;
 
 mod cmd_channel;
 mod recorder;
 mod openai;
 mod utils;
+mod cloud;
+
 
 /*
 Necesito un sistema para pasar comandos del thread del ui al thread principal. Para eso necesito:
@@ -51,24 +57,40 @@ pub struct RecFile {
     chunks: Vec<Chunk>,
 }
 
+#[derive(Serialize, Deserialize, Debug)]
+struct UserData {
+    email: String,
+}
+
 #[tokio::main]
-async fn main() {
+async fn main() -> anyhow::Result<()> {
     fs::create_dir_all(utils::get_data_path()).unwrap();
-    fs::create_dir_all(utils::get_data_path()).unwrap();
+
+    let cloud_manager = CloudManager::new(
+        "inteliagente-8728d".to_string(),
+        "conf_2.conf".into())
+        .await?;
 
     let (tx, rx) = cmd_channel::channel::<Cmd>();
 
     tauri::Builder::default()
-        .invoke_handler(tauri::generate_handler![start_recording, stop_recording, get_devices])
+        .invoke_handler(tauri::generate_handler![
+            start_recording,
+            stop_recording,
+            get_devices,
+            get_welcome,
+            set_email,
+            start]
+        )
         .manage(tx)
+        .manage(cloud_manager)
         .setup(|app| {
-
             let resource_path = app.path_resolver()
-                .resolve_resource("private.txt")
+                .resolve_resource("conf_1.conf")
                 .unwrap();
 
             println!("{:?}", resource_path);
-
+            
             let handle = app.handle();
             thread::spawn(move || {
                 main_thread(handle, rx);
@@ -81,46 +103,36 @@ async fn main() {
                 handle.emit_all("panic", format!("{:?}", info)).unwrap();
             }));
 
-            let _handle = app.handle();
-            let _id = app.listen_global("front_ready",move |_ev| {
-                println!("Front ready");
-
-                // let mut msg = String::new();
-                //
-                // for host in cpal::available_hosts() {
-                //     msg.push_str(format!("Host: {}\n", host.name()).as_str());
-                //     let host = cpal::host_from_id(host).unwrap();
-                //     for device in host.input_devices().unwrap() {
-                //         msg.push_str(format!("-{}\n", device.name().unwrap()).as_str());
-                //         for c in device.supported_input_configs().unwrap() {
-                //             msg.push_str(format!("  -{}b, {}ch, [{},{}]\n",
-                //                                  c.sample_format(), c.channels(), c.min_sample_rate().0,
-                //                                  c.max_sample_rate().0).as_str());
-                //         }
-                //     }
-                // }
-                // println!("{msg}");
-                // handle.app_handle().emit_all("dbg_msg", msg).unwrap();
-            });
+            // let _handle = app.handle();
+            // let _id = app.listen_global("front_ready", move |_ev| {
+            //     println!("Front ready");
+            //     // let mut msg = String::new();
+            //     //
+            //     // for host in cpal::available_hosts() {
+            //     //     msg.push_str(format!("Host: {}\n", host.name()).as_str());
+            //     //     let host = cpal::host_from_id(host).unwrap();
+            //     //     for device in host.input_devices().unwrap() {
+            //     //         msg.push_str(format!("-{}\n", device.name().unwrap()).as_str());
+            //     //         for c in device.supported_input_configs().unwrap() {
+            //     //             msg.push_str(format!("  -{}b, {}ch, [{},{}]\n",
+            //     //                                  c.sample_format(), c.channels(), c.min_sample_rate().0,
+            //     //                                  c.max_sample_rate().0).as_str());
+            //     //         }
+            //     //     }
+            //     // }
+            //     // println!("{msg}");
+            //     // handle.app_handle().emit_all("dbg_msg", msg).unwrap();
+            // });
             Ok(())
         })
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
+    Ok(())
 }
 
-struct MyVisitor;
-
-impl<'de> Visitor<'de> for MyVisitor {
-    type Value = u8;
-
-    fn expecting(&self, formatter: &mut Formatter) -> std::fmt::Result {
-        formatter.write_str("A u8")
-    }
-
-    fn visit_seq<A>(self, mut seq: A) -> Result<Self::Value, A::Error> where A: SeqAccess<'de> {
-        let el: u8 = seq.next_element()?.unwrap();
-        Ok(el)
-    }
+#[tauri::command]
+async fn start() -> Result<(), ()> {
+    Ok(())
 }
 
 #[tauri::command]
@@ -146,11 +158,50 @@ async fn start_recording(tx: State<'_, CmdSender<Cmd>>, device: String) -> Resul
 }
 
 #[tauri::command]
+async fn get_welcome(cloud_manager: State<'_, CloudManager>) -> Result<bool, ()> {
+    
+    if let Some(data) = load_user_data() {
+        cloud_manager.create_user(&data.email).await;
+        Ok(false)
+    } else {
+        Ok(true)
+    }
+}
+
+#[tauri::command]
+async fn set_email(cloud_manager: State<'_, CloudManager>, email: String) -> Result<(), ()> {
+    println!("Email: {email}");
+    
+    let new_user_data = UserData {
+        email: email.trim().to_string(),
+    };
+    
+    let mut path = utils::get_data_path();
+    path.push("user_data.json");
+
+    let file = File::create(&path).unwrap();
+    serde_json::to_writer(file, &new_user_data).unwrap();
+    
+    cloud_manager.create_user(&email).await;
+    Ok(())
+}
+
+#[tauri::command]
 async fn stop_recording(tx: State<'_, CmdSender<Cmd>>, format_text: String) -> Result<(), ()> {
     if tx.send_io::<String, Result<(), ()>>(Cmd::StopRecording, Some(format_text)).await.is_ok() {
         println!("Recording stopped");
     }
     Ok(())
+}
+
+fn load_user_data() -> Option<UserData> {
+    let mut path = utils::get_data_path();
+    path.push("user_data.json");
+    return if let Ok(file) = File::open(&path) {
+        serde_json::from_reader(file).unwrap()
+    } else {
+        None
+    };
 }
 
 fn main_thread(app: AppHandle, mut rx: CmdReceiver<Cmd>) {
@@ -159,7 +210,7 @@ fn main_thread(app: AppHandle, mut rx: CmdReceiver<Cmd>) {
         Recording,
     }
     let mut state = States::Idle;
-
+    
     struct Context {
         start_t: Option<Instant>,
         stream_1: Option<Stream>,
@@ -210,6 +261,8 @@ fn main_thread(app: AppHandle, mut rx: CmdReceiver<Cmd>) {
                     context.stream_2 = None;
                     state = States::Idle;
 
+                    let recorded_t = context.start_t.unwrap().elapsed().as_secs() as u32;
+
                     println!("Transcribing...");
                     let n_seg = fs::read_dir(utils::get_rec_path()).unwrap().count();
                     if n_seg > 0 {
@@ -227,6 +280,10 @@ fn main_thread(app: AppHandle, mut rx: CmdReceiver<Cmd>) {
                         println!("Result:\n{result}");
                         app.emit_all("result_text", result).unwrap();
                     }
+                    let cloud_manager = app.state::<CloudManager>().inner();
+                    let user_data = load_user_data().unwrap();
+                    
+                    block_on(cloud_manager.add_log(&user_data.email, recorded_t));
 
                     Some(Box::new(Ok::<(), ()>(())))
                 }

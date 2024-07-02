@@ -26,6 +26,9 @@ async-openai = "0.23.3"
 log = "0.4.21"
 directories = "5.0.1"
 dasp_sample = "0.11.0"
+firestore = "0.42.0"
+chrono = "0.4.38"
+anyhow = "1.0.86"
 
 [features]
 # this feature is used for production builds or when `devPath` points to the filesystem and the built-in dev server is disabled.
