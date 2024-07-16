@@ -1,11 +1,25 @@
 <script lang="ts">
-	import { Button, Spinner, Card, Textarea, Modal, Label, Select, Input } from 'flowbite-svelte';
+	import {
+		Button,
+		Spinner,
+		Card,
+		Textarea,
+		Modal,
+		Label,
+		Select,
+		Input,
+		Tabs,
+		TabItem
+	} from 'flowbite-svelte';
 	import { invoke } from '@tauri-apps/api/tauri';
 	import {
 		MicrophoneSolid,
 		PauseSolid,
 		ExclamationCircleOutline,
-		EnvelopeSolid
+		EnvelopeSolid,
+		PenSolid,
+		ClipboardCheckSolid,
+		AdjustmentsVerticalSolid
 	} from 'flowbite-svelte-icons';
 	import { emit, listen } from '@tauri-apps/api/event';
 	import { onMount } from 'svelte';
@@ -34,6 +48,8 @@
 	let welcome_modal = false;
 	let email_invalid = true;
 	let email = '';
+
+	let result_open = false;
 
 	onMount(async () => {
 		update_devices();
@@ -64,6 +80,18 @@
 
 		welcome_modal = await invoke('get_welcome');
 
+		const tab_content = document
+			.querySelector('.tabs')
+			.children[2];
+
+		tab_content.style.display = 'flex';
+		tab_content.style.flexGrow = '1';
+		tab_content.children[0].style.display = 'flex';
+		tab_content.children[0].style.flexGrow = '1';
+
+		const observer_config = { attributes: false, childList: true, subtree: false };
+		const observer = new MutationObserver(tab_change);
+		observer.observe(tab_content, observer_config);
 		//emit('front_ready');
 		//await invoke('front_ready');
 	});
@@ -86,10 +114,12 @@
 			trans_text = '';
 			result_text = '';
 			rec_state = 1;
+
 		} else if (rec_state == 1) {
 			console.log('Stop');
 			rec_state = 2;
 			await invoke('stop_recording', { formatText: format_text });
+			result_open = true;
 			rec_state = 0;
 		}
 	}
@@ -103,6 +133,15 @@
 		console.log('click');
 		await invoke('set_email', { email: email });
 		welcome_modal = false;
+	}
+
+	function tab_change(mutationsList, observer) {
+		const tab_content = document
+			.querySelector('.tabs')
+			.children[2];
+
+		tab_content.children[0].style.display = 'flex';
+		tab_content.children[0].style.flexGrow = '1';
 	}
 </script>
 
@@ -120,31 +159,35 @@
 			</Label>
 		</Card>
 	</div>
-	<div class="flex min-h-0 grow justify-center gap-x-2 p-2">
-		<Card class="min-h-0 max-w-full">
-			<h1 class="mb-2 text-center text-2xl font-bold text-gray-900 dark:text-white">
-				Transcripción
-			</h1>
-			<!-- <p class="font-normal p-2 h-full dark:text-gray-200 border border-gray-200 rounded-lg leading-tight overflow-y-auto">Hello, thanks for reaching out.
-				I've unfortunately not received the package yet, do you have any way to see the tracking info?
-				I made this order to test if it landed in my country (Colombia), but I didn't have high hopes because in my experience the packages that are sent without tracking info are often lost by the local postal service. In the past, the only reliable way for me to receive orders was to use a mail forwarding service, but I noticed that it isn't allowed anymore. 
-				However, I was wondering if you could allow me to ship my next order to such forwarding service? I would be okay with losing any reship possibility in the event of no arrival since I know that it is more risky. Or if there's any way to have it shipped to my country with tracking, that could also work.
-				Thank you for your kind help.</p> -->
-			<Textarea class="h-full resize-none" value={trans_text} spellcheck="false"></Textarea>
-		</Card>
-		<Card class="min-h-0 max-w-full">
-			<h1 class="mb-2 text-center text-2xl font-bold text-gray-900 dark:text-white">Formato</h1>
-			<Textarea class="h-full resize-none" bind:value={format_text} spellcheck="false"></Textarea>
-			<h1 class="mb-2 text-center text-2xl font-bold text-gray-900 dark:text-white">
-				Interpretación
-			</h1>
-			<Textarea class="h-full resize-none" readonly value={result_text} spellcheck="false"
-			></Textarea>
-			<!-- <p class="font-normal p-2 h-full text-gray-700 dark:text-gray-200 border border-gray-200 rounded-lg leading-tight overflow-y-auto"></p> -->
-		</Card>
+
+	<div class="tabs flex flex-col grow gap-x-2 p-2">
+		<Tabs>
+			<TabItem open>
+				<div slot="title" class="flex items-center gap-2">
+					<AdjustmentsVerticalSolid size="md" />
+					Formato
+				</div>
+				<Textarea class="h-full resize-none" bind:value={format_text} spellcheck="false"></Textarea>
+			</TabItem>
+			<TabItem>
+				<div slot="title" class="flex items-center gap-2">
+					<PenSolid size="md" />
+					Transcripción
+				</div>
+				<Textarea class="h-full resize-none" readonly value={trans_text} spellcheck="false"></Textarea>
+			</TabItem>
+			<TabItem bind:open={result_open}>
+				<div slot="title" class="flex items-center gap-2">
+					<ClipboardCheckSolid size="md" />
+					Resultado
+				</div>
+				<Textarea class="h-full resize-none" readonly value={result_text} spellcheck="false"
+				></Textarea>
+			</TabItem>
+		</Tabs>
 	</div>
 	<div class="flex justify-center">
-		<Button color="red" pill={true} class="m-5 !p-4" on:click={record_btn}>
+		<Button color="red" pill={true} class="m-3 !p-4" on:click={record_btn}>
 			{#if rec_state == 1}
 				<PauseSolid class="mr-5 h-7 w-7" />
 				<p>{rec_time_text}</p>
@@ -189,7 +232,15 @@
 			<EnvelopeSolid slot="left" class="h-5 w-5 text-gray-500 dark:text-gray-400" />
 		</Input><br />
 		<Button color="green" class="me-2" bind:disabled={email_invalid} on:click={enter_btn}
-			>Ingresar</Button
+		>Ingresar
+		</Button
 		>
 	</div>
 </Modal>
+
+<!--<style>-->
+<!--    #abc:global(.group) {-->
+<!--				background-color: #0e9f6e;-->
+<!--    }-->
+
+<!--</style>-->
